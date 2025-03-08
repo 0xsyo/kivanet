@@ -1,39 +1,31 @@
 import os
-import re
 import json
 import time
 import random
 import requests
 import hashlib
-import hmac
+import threading
 from fake_useragent import UserAgent
 from rich.console import Console
 from rich.table import Table
-from rich.progress import Progress
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 
 console = Console()
 
 def rainbow_banner():
     os.system("clear" if os.name == "posix" else "cls")
-    
     colors = ["red", "yellow", "green", "cyan", "blue", "magenta"]
-    
     banner = """
   _______                          
  |     __|.--.--.---.-.-----.---.-.\n |__     ||  |  |  _  |-- __|  _  |\n |_______||___  |___._|_____|___._|\n          |_____|                   
     """
-    
     for i, char in enumerate(banner):
         color = colors[i % len(colors)]
         console.print(char, style=color, end="")
         time.sleep(0.003)
-    
     console.print("\nPlease wait...", style="bright_yellow")
     time.sleep(2)
-    
     os.system("clear" if os.name == "posix" else "cls")
-    
     for i, char in enumerate(banner):
         color = colors[i % len(colors)]
         console.print(char, style=color, end="")
@@ -41,22 +33,15 @@ def rainbow_banner():
 
 class KivanetAutomation:
     def __init__(self):
-        # Initialize console for rich output
         self.console = Console()
-        
-        # Create necessary files if they don't exist
         self.ensure_files_exist()
-        
-        # Load credentials and configuration
         self.load_credentials()
         self.load_proxies()
         self.load_headers()
-        
-        # Base URL for API endpoints
         self.base_url = "https://app.kivanet.com/api"
+        self.account_data = {}
     
     def ensure_files_exist(self):
-        """Create necessary files if they don't exist"""
         files_to_create = ['acc.txt', 'proxy.txt', 'headers.json']
         for file in files_to_create:
             if not os.path.exists(file):
@@ -64,15 +49,9 @@ class KivanetAutomation:
                 self.console.print(f"[yellow]Created {file} file[/yellow]")
     
     def generate_password_hash(self, password: str) -> str:
-        """
-        Generate password hash 
-        This is a placeholder - you'll need to replace with actual encryption method
-        """
-        # Example method - may need adjustment based on actual encryption
         return hashlib.md5(password.encode('utf-8')).hexdigest()
     
     def load_credentials(self):
-        """Load accounts from acc.txt"""
         try:
             with open('acc.txt', 'r') as f:
                 self.accounts = []
@@ -82,21 +61,20 @@ class KivanetAutomation:
                         parts = line.split(':')
                         if len(parts) == 2:
                             email, password = parts
-                            # Optional: Apply password hash transformation
                             encrypted_password = self.generate_password_hash(password)
                             self.accounts.append([email, encrypted_password])
                         else:
                             self.console.print(f"[red]Invalid account format: {line}[/red]")
+            if not self.accounts:
+                self.console.print("[red]No accounts found in acc.txt[/red]")
         except Exception as e:
             self.console.print(f"[bold red]Error loading accounts: {e}[/bold red]")
             self.accounts = []
     
     def load_proxies(self):
-        """Load proxies from proxy.txt"""
         try:
             with open('proxy.txt', 'r') as f:
                 self.proxies = [line.strip() for line in f if line.strip()]
-            
             if not self.proxies:
                 self.console.print("[yellow]No proxies found. Running without proxy.[/yellow]")
         except Exception as e:
@@ -104,7 +82,6 @@ class KivanetAutomation:
             self.proxies = []
     
     def load_headers(self):
-        """Load or initialize headers"""
         try:
             with open('headers.json', 'r') as f:
                 self.headers_cache = json.load(f)
@@ -112,21 +89,27 @@ class KivanetAutomation:
             self.headers_cache = {}
     
     def save_headers(self):
-        """Save headers to headers.json"""
         with open('headers.json', 'w') as f:
             json.dump(self.headers_cache, f, indent=2)
     
     def generate_headers(self, email: str) -> Dict[str, str]:
-        """Generate headers with fake user agent"""
         try:
             ua = UserAgent()
             headers = {
                 'User-Agent': ua.random,
                 'Accept': '*/*',
                 'Accept-Language': 'id-ID,id;q=0.7',
+                'Accept-Encoding': 'gzip, deflate, br, zstd',
                 'Content-Type': 'application/json',
                 'Origin': 'https://app.kivanet.com',
-                'Referer': 'https://app.kivanet.com/'
+                'Referer': 'https://app.kivanet.com/',
+                'sec-ch-ua': '"Not(A:Brand";v="99", "Brave";v="133", "Chromium";v="133"',
+                'sec-ch-ua-mobile': '?0',
+                'sec-ch-ua-platform': '"Linux"',
+                'sec-fetch-dest': 'empty',
+                'sec-fetch-mode': 'cors',
+                'sec-fetch-site': 'same-origin',
+                'sec-gpc': '1'
             }
             self.headers_cache[email] = headers
             self.save_headers()
@@ -136,134 +119,118 @@ class KivanetAutomation:
             return {}
     
     def get_headers(self, email: str) -> Dict[str, str]:
-        """Get or generate headers for an account"""
         return self.headers_cache.get(email) or self.generate_headers(email)
     
     def login(self, email: str, encrypted_password: str) -> Optional[str]:
-        """Login to Kivanet and return bearer token"""
+        session = requests.Session()
         headers = self.get_headers(email)
-        
-        # Select a random proxy if available
         proxies = None
         if self.proxies:
             proxy = random.choice(self.proxies)
             proxies = {'http': proxy, 'https': proxy}
         
+        payload = {"email": email, "password": encrypted_password}
         try:
-            response = requests.post(
-                f"{self.base_url}/user/login", 
-                json={"email": email, "password": encrypted_password},
+            response = session.post(
+                f"{self.base_url}/user/login",
+                json=payload,
                 headers=headers,
                 proxies=proxies,
                 timeout=10
             )
-            
             data = response.json()
-            
             if data.get('state'):
-                return data.get('object')
+                token = data.get('object')
+                self.account_data[email] = {'session': session, 'token': token}
+                self.console.print(f"[green]Login successful for {email}[/green]")
+                return token
             else:
+                self.console.print(f"[red]Login failed for {email}: {data.get('message', 'Unknown error')}[/red]")
                 return None
-        
         except requests.RequestException as e:
-            self.console.print(f"[red]Network error during login: {e}[/red]")
+            self.console.print(f"[red]Network error during login for {email}: {e}[/red]")
             return None
         except json.JSONDecodeError:
-            self.console.print(f"[red]Invalid response from server for {email}[/red]")
+            self.console.print(f"[red]Invalid response from server for {email}: {response.text[:100]}[/red]")
             return None
     
-    def get_user_info(self, token: str, headers: Dict[str, str]) -> Optional[Dict]:
-        """Retrieve user information"""
+    def get_user_info(self, email: str) -> Optional[Dict]:
+        data = self.account_data.get(email, {})
+        session = data.get('session')
+        token = data.get('token')
+        headers = self.get_headers(email)
         try:
-            response = requests.get(
+            response = session.get(
                 f"{self.base_url}/user/getUserInfo",
-                headers={**headers, 'Authorization': token},
+                headers={**headers, 'Authorization': f"Bearer {token}"},
                 timeout=10
             )
             data = response.json()
             return data.get('object') if data.get('state') else None
         except Exception as e:
-            self.console.print(f"[red]User info retrieval error: {e}[/red]")
+            self.console.print(f"[red]User info retrieval error for {email}: {e}[/red]")
             return None
     
-    def get_task_list(self, token: str, headers: Dict[str, str]) -> List[Dict]:
-        """Retrieve list of tasks"""
+    def get_sign_info(self, email: str) -> Optional[Dict]:
+        data = self.account_data.get(email, {})
+        session = data.get('session')
+        token = data.get('token')
+        headers = self.get_headers(email)
         try:
-            response = requests.post(
-                f"{self.base_url}/task/getTaskList",
-                headers={**headers, 'Authorization': token},
-                json={"status": 1},  # Updated to use actual payload
-                timeout=10
-            )
-            data = response.json()
-            return data.get('object', []) if data.get('state') else []
-        except Exception as e:
-            self.console.print(f"[red]Task list retrieval error: {e}[/red]")
-            return []
-    
-    def do_task(self, token: str, headers: Dict[str, str], task_id: str) -> bool:
-        """Complete a specific task"""
-        try:
-            response = requests.post(
-                f"{self.base_url}/task/doTask",
-                headers={**headers, 'Authorization': token},
-                json={"id": task_id},
+            response = session.get(
+                f"{self.base_url}/user/getSignInfo",
+                headers={**headers, 'Authorization': f"Bearer {token}"},
                 timeout=10
             )
             data = response.json()
             if data.get('state'):
-                return True
+                return data.get('object', {})
             else:
-                return False
+                error_code = data.get('code', 'Unknown')
+                if error_code == "0009":
+                    self.console.print(f"[yellow]Account {email} may need to sign or activate first (Error 0009)[/yellow]")
+                else:
+                    self.console.print(f"[yellow]Failed to fetch sign info for {email}: {data.get('message', 'Unknown error')} - Code: {error_code}[/yellow]")
+                return {}
         except Exception as e:
-            self.console.print(f"[red]Task completion error: {e}[/red]")
-            return False
+            self.console.print(f"[red]Sign info retrieval error for {email}: {e}[/red]")
+            return {}
     
-    def complete_tasks(self, token: str, headers: Dict[str, str], tasks: List[Dict]) -> None:
-        """Complete available tasks"""
-        for task in tasks:
-            task_delay = random.uniform(7, 14)
-            
-            with Progress(console=self.console) as progress:
-                task_progress = progress.add_task(
-                    f"[cyan]Completing task: {task['taskName']}[/cyan]", 
-                    total=task_delay
-                )
-                
-                while not progress.finished:
-                    progress.update(task_progress, advance=0.1)
-                    time.sleep(0.1)
-            
-            # Attempt to complete the task
-            task_completed = self.do_task(token, headers, task['id'])
-    
-    def get_account_balance(self, token: str, headers: Dict[str, str]) -> Dict:
-        """Retrieve user account balance"""
+    def get_mining_base(self, email: str) -> Optional[Dict]:
+        data = self.account_data.get(email, {})
+        session = data.get('session')
+        token = data.get('token')
+        headers = self.get_headers(email)
         try:
-            response = requests.get(
-                f"{self.base_url}/user/getMyAccountInfo",
-                headers={**headers, 'Authorization': token},
+            response = session.get(
+                f"{self.base_url}/user/getMiningBaseList",
+                headers={**headers, 'Authorization': f"Bearer {token}"},
                 timeout=10
             )
             data = response.json()
-            return data.get('object', {}) if data.get('state') else {}
+            if data.get('state'):
+                return data.get('object', {})
+            self.console.print(f"[yellow]Failed to fetch mining base for {email}: {data.get('message', 'Unknown error')}[/yellow]")
+            return {}
         except Exception as e:
-            self.console.print(f"[red]Balance retrieval error: {e}[/red]")
+            self.console.print(f"[red]Mining base retrieval error for {email}: {e}[/red]")
             return {}
     
-    def display_account_info(self, user_info: Dict, balance_info: Dict):
-        """Display account information in a rich table"""
+    def display_account_info(self, user_info: Dict, sign_info: Dict, email: str):
+        if not user_info or not isinstance(user_info, dict):
+            self.console.print(f"[red]User info is invalid or missing for {email}[/red]")
+            return
+        
         table = Table(title=f"[bold green]User: {user_info.get('nickName', 'N/A')}[/bold green]")
         table.add_column("Attribute", style="cyan")
         table.add_column("Value", style="magenta")
         
-        # Add account details to the table
         details = {
             "Email": user_info.get('email', 'N/A'),
             "Invite Number": user_info.get('inviteNum', 'N/A'),
             "Created Time": user_info.get('createTime', 'N/A'),
-            "Balance": balance_info.get('balance', 'N/A'),
-            "Chain Address": balance_info.get('chainAddress', 'N/A')
+            "Balance": sign_info.get('allAccount', 'N/A') if sign_info else 'N/A',
+            "Sign Time": sign_info.get('signTime', 'N/A') if sign_info else 'N/A'
         }
         
         for key, value in details.items():
@@ -271,54 +238,72 @@ class KivanetAutomation:
         
         self.console.print(table)
     
+    def keep_alive(self, email: str, encrypted_password: str):
+        while True:
+            token = self.account_data.get(email, {}).get('token')
+            if not token:
+                token = self.login(email, encrypted_password)
+                if not token:
+                    self.console.print(f"[red]Initial login failed for {email}, retrying in 60s[/red]")
+                    time.sleep(60)
+                    continue
+            
+            user_info = self.get_user_info(email)
+            sign_info = self.get_sign_info(email)
+            mining_base = self.get_mining_base(email)
+            
+            if not user_info:  # Jika user_info gagal, coba login ulang
+                self.console.print(f"[yellow]Reattempting login for {email} due to user info failure[/yellow]")
+                time.sleep(5)
+                new_token = self.login(email, encrypted_password)
+                if new_token:
+                    token = new_token
+                else:
+                    self.console.print(f"[red]Re-login failed for {email}, skipping this cycle[/red]")
+                    time.sleep(60)
+                    continue
+            
+            self.display_account_info(user_info, sign_info, email)
+            
+            if mining_base:
+                self.console.print(f"[green]Heartbeat active - Mining Base Users: {mining_base.get('userNum', 'N/A')}[/green]")
+            
+            heartbeat_delay = random.uniform(60, 300)  # 1-5 menit
+            minutes, seconds = divmod(int(heartbeat_delay), 60)
+            formatted_time = f"00:{minutes:02d}:{seconds:02d}"
+            self.console.print(f"[cyan]Next heartbeat for {email} in: {formatted_time}[/cyan]")
+            time.sleep(heartbeat_delay)
+    
     def main_automation(self):
-        """Main automation workflow"""
+        if not self.accounts:
+            self.console.print("[red]No accounts loaded. Please check acc.txt[/red]")
+            return
+
+        threads = []
         for email, encrypted_password in self.accounts:
             self.console.print(f"\n{'━' * 40}")
             
-            # Login
             token = self.login(email, encrypted_password)
             if not token:
+                self.console.print(f"[red]Skipping {email} due to login failure[/red]")
                 continue
             
-            headers = self.get_headers(email)
-            
-            # Get User Info
-            user_info = self.get_user_info(token, headers)
-            if not user_info:
-                continue
-            
-            # Get Balance Info
-            balance_info = self.get_account_balance(token, headers)
-            
-            # Display Account Info
-            self.display_account_info(user_info, balance_info)
-            
-            # Get and Complete Tasks
-            tasks = self.get_task_list(token, headers)
-            if tasks:
-                self.complete_tasks(token, headers, tasks)
+            thread = threading.Thread(target=self.keep_alive, args=(email, encrypted_password))
+            threads.append(thread)
+            thread.start()
         
-        # Random sleep between next batch of account processing (1-7 minutes)
-        next_run_time = random.uniform(60, 7 * 60) # 60 seconds (1 minute) to 420 seconds (7 minutes)
-
-        # Convert seconds to formatted time
-        minutes, seconds = divmod(int(next_run_time), 60)
-        formatted_time = f"00:{minutes:02d}:{seconds:02d}"  # Always start with 00 hours
-
-        self.console.print(f"\n[bold yellow]Next run in: {formatted_time}[/bold yellow]")
-        time.sleep(next_run_time)
+        for thread in threads:
+            thread.join()
 
 def main():
     rainbow_banner()
     try:
         automation = KivanetAutomation()
-        while True:
-            automation.main_automation()
+        automation.main_automation()
     except KeyboardInterrupt:
         print("\n[Interrupted] Script stopped by user.")
     except Exception as e:
-        print(f"An unexpected error occurred: {e}")
+        console.print(f"[bold red]An unexpected error occurred: {e}[/bold red]")
 
 if __name__ == "__main__":
     main()
